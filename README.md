@@ -9,7 +9,7 @@ SolcQueue is a production-oriented Solidity compilation service. It turns Solidi
 - Compiles real Solidity source with the official `solc-js` compiler
 - Produces ABI, bytecode, deployed bytecode, metadata, warnings, and errors
 - Supports synchronous compilation and asynchronous jobs
-- Scales active workers in response to queue depth within configured limits
+- Runs compilation in Node.js worker threads, with concurrency scaled by queue depth within configured limits
 - Streams job lifecycle events over Server-Sent Events (SSE)
 - Validates source size, filenames, contract names, and optimizer configuration
 - Reports queue, worker, compiler, completion, and failure metrics
@@ -94,6 +94,8 @@ curl -N http://localhost:3000/api/events
 
 The default maximum Solidity source size is 512 KiB. The HTTP JSON body limit is 1 MiB.
 
+Both immediate HTTP requests and queued jobs share the worker limit. Each job starts a dedicated compiler thread and terminates it after completion, keeping compilation off the HTTP event loop. `MIN_WORKERS` is a minimum concurrency target when work is available; it does not keep idle threads running. Library callers can use `compileQueued(input)` for the same behavior; `compile(input)` remains a synchronous helper.
+
 ## Test
 
 ```bash
@@ -108,6 +110,8 @@ MIT © cent
 
 ## Current limitations
 
+- This service has no built-in authentication, queue admission limit, or job retention policy. Restrict access through an authenticated proxy and apply request limits before exposing it to untrusted clients.
+- Starting a compiler thread for each job adds latency and memory overhead; worker reuse is not implemented.
 - Compilation success does not imply contract correctness or security.
 - The in-memory job queue and metrics are scoped to one running service instance.
 - The service does not manage keys, deploy contracts, or provide chain consensus.

@@ -1,6 +1,8 @@
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const solc = require('solc');
+const { Worker } = require('node:worker_threads');
+const path = require('node:path');
 
 class ValidationError extends Error {
     constructor(message) {
@@ -33,6 +35,9 @@ class SolidityStackDiamondService extends EventEmitter {
         this.completed = 0;
         this.failed = 0;
         this.startedAt = new Date().toISOString();
+        this.workers = new Set();
+        this.waiters = new Map();
+        this.closed = false;
     }
 
     getData() { return this.getMetrics(); }
@@ -79,6 +84,7 @@ class SolidityStackDiamondService extends EventEmitter {
     }
 
     submit(input) {
+        if (this.closed) throw new Error('Compiler service is closed');
         const request = this.validateRequest(input);
         const id = crypto.randomUUID();
         const job = { id, status: 'queued', createdAt: new Date().toISOString(), startedAt: null, finishedAt: null, request, result: null, error: null };
@@ -114,22 +120,23 @@ class SolidityStackDiamondService extends EventEmitter {
     }
 
     drain() {
+        if (this.closed) return;
         const target = this.desiredWorkers();
         while (this.queue.length && this.activeWorkers < target) {
             const id = this.queue.shift();
             this.activeWorkers += 1;
-            setImmediate(() => this.runJob(id));
+            this.runJob(id);
         }
     }
 
-    runJob(id) {
+    async runJob(id) {
         const job = this.jobs.get(id);
         if (!job) return;
         job.status = 'running';
         job.startedAt = new Date().toISOString();
         this.publish('job.started', job);
         try {
-            job.result = this.compile(job.request);
+            job.result = await this.compileInWorker(job.request);
             job.status = 'completed';
             this.completed += 1;
             job.finishedAt = new Date().toISOString();
@@ -141,9 +148,54 @@ class SolidityStackDiamondService extends EventEmitter {
             job.finishedAt = new Date().toISOString();
             this.publish('job.failed', job);
         } finally {
+            const waiter = this.waiters.get(id);
+            if (waiter) {
+                this.waiters.delete(id);
+                if (job.status === 'completed') waiter.resolve(job.result);
+                else waiter.reject(Object.assign(new Error(job.error.message), job.error));
+            }
             this.activeWorkers -= 1;
             this.drain();
         }
+    }
+
+    compileQueued(input) {
+        const job = this.submit(input);
+        return new Promise((resolve, reject) => this.waiters.set(job.id, { resolve, reject }));
+    }
+
+    async compileInWorker(request) {
+        const worker = new Worker(path.join(__dirname, 'compiler-worker.js'), { workerData: request });
+        this.workers.add(worker);
+        try {
+            return await new Promise((resolve, reject) => {
+                worker.once('message', message => {
+                    if (message.error) reject(Object.assign(new Error(message.error.message), message.error));
+                    else resolve(message.result);
+                });
+                worker.once('error', reject);
+                worker.once('exit', code => reject(new Error(`Compiler worker exited before returning a result (code ${code})`)));
+            });
+        } finally {
+            await worker.terminate();
+            this.workers.delete(worker);
+        }
+    }
+
+    async close() {
+        this.closed = true;
+        const error = new Error('Compiler service is closed');
+        for (const waiter of this.waiters.values()) waiter.reject(error);
+        this.waiters.clear();
+        for (const id of this.queue.splice(0)) {
+            const job = this.jobs.get(id);
+            job.status = 'failed';
+            job.error = serializeError(error);
+            job.finishedAt = new Date().toISOString();
+            this.failed += 1;
+            this.publish('job.failed', job);
+        }
+        await Promise.all([...this.workers].map(worker => worker.terminate()));
     }
 
     validateRequest(input) {
@@ -181,6 +233,6 @@ function normalizeDiagnostic(item) {
     return { severity: item.severity, type: item.type, message: item.message, formattedMessage: item.formattedMessage, sourceLocation: item.sourceLocation || null };
 }
 
-function serializeError(error) { return { name: error.name, message: error.message, diagnostics: error.diagnostics || [] }; }
+function serializeError(error) { return { name: error.name, message: error.message, statusCode: error.statusCode || 500, diagnostics: error.diagnostics || [] }; }
 
 module.exports = { SolidityStackDiamondService, ValidationError, CompilationError };
