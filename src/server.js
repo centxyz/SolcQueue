@@ -21,8 +21,8 @@ class Server {
         this.app.get('/api/metrics', (request, response) => response.json(this.service.getMetrics()));
         this.app.get('/api/data', (request, response) => response.json({ success: true, data: this.service.getData() }));
 
-        const compile = (request, response, next) => {
-            try { response.json({ success: true, result: this.service.compile(request.body) }); }
+        const compile = async (request, response, next) => {
+            try { response.json({ success: true, result: await this.service.compileQueued(request.body) }); }
             catch (error) { next(error); }
         };
         this.app.post('/api/compile', compile);
@@ -66,7 +66,8 @@ class Server {
         });
     }
 
-    stop() {
+    async stop() {
+        await this.service.close();
         if (!this.httpServer) return Promise.resolve();
         return new Promise((resolve, reject) => this.httpServer.close(error => error ? reject(error) : resolve()));
     }

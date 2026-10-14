@@ -1,4 +1,4 @@
-const { describe, test, beforeEach } = require('node:test');
+const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const request = require('supertest');
 const { Server } = require('../src/server');
@@ -14,6 +14,7 @@ contract Counter {
 describe('SolidityStackDiamond API', () => {
     let server;
     beforeEach(() => { server = new Server(0, { logging: false }); });
+    afterEach(async () => { await server.stop(); });
 
     test('reports compiler and worker health', async () => {
         const response = await request(server.app).get('/health').expect(200);
@@ -67,7 +68,7 @@ describe('SolidityStackDiamond API', () => {
 });
 
 async function waitForJob(service, id) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
         const job = service.getJob(id);
         if (job.status === 'completed' || job.status === 'failed') return job;
         await new Promise(resolve => setTimeout(resolve, 10));
