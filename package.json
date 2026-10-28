@@ -24,7 +24,7 @@
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "morgan": "^1.10.0",
-    "solc": "^0.8.30"
+    "solc": "^0.8.38"
   },
   "devDependencies": {
     "supertest": "^7.1.3"
